@@ -1,73 +1,118 @@
-import os
-import json
-from typing import List, Dict
+import numpy as np
+from typing import Dict, List, Optional
+import time
 
 class WorkflowAnalyzer:
-    def __init__(self, workflow_config_file: str):
-        self.workflow_config = self._load_workflow_config(workflow_config_file)
-        self.task_dependencies: Dict[str, List[str]] = self._analyze_task_dependencies()
-        self.task_resources: Dict[str, Dict[str, float]] = self._analyze_task_resources()
-        self.node_resources: Dict[str, Dict[str, float]] = self._analyze_node_resources()
+    def __init__(self):
+        self.performance_metrics = {}
+        self.workflow_history = []
+        self.optimization_threshold = 0.75
 
-    def _load_workflow_config(self, config_file: str) -> Dict:
-        with open(config_file, 'r') as f:
-            return json.load(f)
+    def analyze_workflow(self, workflow_data: Dict) -> Dict:
+        """Analyzes workflow performance and suggests optimizations."""
+        workflow_id = workflow_data.get('id')
+        start_time = time.time()
+        
+        metrics = self._calculate_metrics(workflow_data)
+        self.performance_metrics[workflow_id] = metrics
+        self.workflow_history.append(workflow_data)
+        
+        optimization_suggestions = self._generate_optimization_suggestions(metrics)
+        
+        return {
+            'workflow_id': workflow_id,
+            'metrics': metrics,
+            'suggestions': optimization_suggestions,
+            'analysis_time': time.time() - start_time
+        }
 
-    def _analyze_task_dependencies(self) -> Dict[str, List[str]]:
-        task_dependencies = {}
-        for workflow in self.workflow_config['workflows']:
-            for task in workflow['tasks']:
-                task_dependencies[task['name']] = [dep['name'] for dep in task['dependencies']]
-        return task_dependencies
+    def _calculate_metrics(self, workflow_data: Dict) -> Dict:
+        """Calculate performance metrics for a workflow."""
+        tasks = workflow_data.get('tasks', [])
+        resource_usage = workflow_data.get('resource_usage', {})
+        
+        metrics = {
+            'task_count': len(tasks),
+            'avg_task_duration': np.mean([t.get('duration', 0) for t in tasks]),
+            'cpu_efficiency': self._calculate_cpu_efficiency(resource_usage),
+            'memory_utilization': self._calculate_memory_utilization(resource_usage),
+            'bottleneck_score': self._identify_bottlenecks(tasks)
+        }
+        
+        return metrics
 
-    def _analyze_task_resources(self) -> Dict[str, Dict[str, float]]:
-        task_resources = {}
-        for workflow in self.workflow_config['workflows']:
-            for task in workflow['tasks']:
-                task_resources[task['name']] = task['resources']
-        return task_resources
+    def _calculate_cpu_efficiency(self, resource_usage: Dict) -> float:
+        """Calculate CPU efficiency score."""
+        if not resource_usage.get('cpu_metrics'):
+            return 0.0
+        
+        cpu_usage = resource_usage['cpu_metrics']
+        return np.mean([usage for usage in cpu_usage if usage is not None])
 
-    def _analyze_node_resources(self) -> Dict[str, Dict[str, float]]:
-        node_resources = {}
-        for node in self.workflow_config['nodes']:
-            node_resources[node['name']] = node['resources']
-        return node_resources
+    def _calculate_memory_utilization(self, resource_usage: Dict) -> float:
+        """Calculate memory utilization score."""
+        if not resource_usage.get('memory_metrics'):
+            return 0.0
+            
+        memory_usage = resource_usage['memory_metrics']
+        return np.mean([usage for usage in memory_usage if usage is not None])
 
-    def optimize_workflow(self) -> Dict[str, List[str]]:
-        workflow_schedule = {}
-        available_nodes = list(self.node_resources.keys())
-        for workflow in self.workflow_config['workflows']:
-            workflow_schedule[workflow['name']] = self._schedule_workflow(workflow, available_nodes)
-        return workflow_schedule
+    def _identify_bottlenecks(self, tasks: List[Dict]) -> float:
+        """Calculate bottleneck score based on task dependencies and duration."""
+        if not tasks:
+            return 0.0
+            
+        max_duration = max(t.get('duration', 0) for t in tasks)
+        avg_duration = np.mean([t.get('duration', 0) for t in tasks])
+        
+        if avg_duration == 0:
+            return 0.0
+            
+        return max_duration / avg_duration
 
-    def _schedule_workflow(self, workflow: Dict, available_nodes: List[str]) -> List[str]:
-        scheduled_tasks = []
-        unscheduled_tasks = [task['name'] for task in workflow['tasks']]
-        while unscheduled_tasks:
-            scheduled = self._schedule_tasks(unscheduled_tasks, available_nodes)
-            scheduled_tasks.extend(scheduled)
-            unscheduled_tasks = [task for task in unscheduled_tasks if task not in scheduled]
-        return scheduled_tasks
+    def _generate_optimization_suggestions(self, metrics: Dict) -> List[str]:
+        """Generate optimization suggestions based on metrics."""
+        suggestions = []
+        
+        if metrics['cpu_efficiency'] < self.optimization_threshold:
+            suggestions.append('Consider reducing CPU allocation or parallelizing tasks')
+            
+        if metrics['memory_utilization'] < self.optimization_threshold:
+            suggestions.append('Memory resources may be over-allocated')
+            
+        if metrics['bottleneck_score'] > 2.0:
+            suggestions.append('Critical bottleneck detected - consider task redistribution')
+            
+        return suggestions
 
-    def _schedule_tasks(self, tasks: List[str], available_nodes: List[str]) -> List[str]:
-        scheduled = []
-        for task in tasks:
-            dependencies = self.task_dependencies[task]
-            if all(dep in scheduled for dep in dependencies):
-                best_node = self._find_best_node(task, available_nodes)
-                if best_node:
-                    scheduled.append(task)
-                    available_nodes.remove(best_node)
-        return scheduled
+    def get_historical_performance(self, workflow_id: Optional[str] = None) -> Dict:
+        """Retrieve historical performance data for analysis."""
+        if workflow_id and workflow_id in self.performance_metrics:
+            return {
+                'workflow_id': workflow_id,
+                'metrics': self.performance_metrics[workflow_id]
+            }
+            
+        return {
+            'workflows': len(self.workflow_history),
+            'avg_metrics': self._calculate_average_metrics()
+        }
 
-    def _find_best_node(self, task: str, available_nodes: List[str]) -> str:
-        best_fit = None
-        best_score = 0
-        task_resources = self.task_resources[task]
-        for node in available_nodes:
-            node_resources = self.node_resources[node]
-            score = sum(node_resources[res] / task_resources[res] for res in task_resources)
-            if score > best_score:
-                best_fit = node
-                best_score = score
-        return best_fit
+    def _calculate_average_metrics(self) -> Dict:
+        """Calculate average metrics across all workflows."""
+        if not self.performance_metrics:
+            return {}
+            
+        all_metrics = list(self.performance_metrics.values())
+        
+        return {
+            'avg_task_count': np.mean([m['task_count'] for m in all_metrics]),
+            'avg_cpu_efficiency': np.mean([m['cpu_efficiency'] for m in all_metrics]),
+            'avg_memory_utilization': np.mean([m['memory_utilization'] for m in all_metrics]),
+            'avg_bottleneck_score': np.mean([m['bottleneck_score'] for m in all_metrics])
+        }
+
+    def reset_analysis(self):
+        """Reset all analysis data."""
+        self.performance_metrics.clear()
+        self.workflow_history.clear()
