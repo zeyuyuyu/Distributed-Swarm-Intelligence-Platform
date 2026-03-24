@@ -1,57 +1,60 @@
 import asyncio
+import uuid
 import random
-from typing import List
 
 class SwarmNode:
-    def __init__(self, node_id: str, neighbors: List['SwarmNode']):
-        self.node_id = node_id
-        self.neighbors = neighbors
-        self.state = 'idle'
-        self.task = None
+    def __init__(self, node_id=None):
+        self.node_id = node_id or str(uuid.uuid4())
+        self.peers = set()
+        self.state = {}
+        self.consensus_protocol = ConsensusProtocol(self)
 
-    async def run(self):
-        while True:
-            if self.state == 'idle':
-                await self.participate_in_consensus()
-            elif self.state == 'active':
-                await self.execute_task()
-            await asyncio.sleep(random.uniform(0.1, 1.0))
+    async def join_swarm(self, peers):
+        self.peers.update(peers)
+        await asyncio.gather(*[self.consensus_protocol.join_consensus(peer) for peer in peers])
 
-    async def participate_in_consensus(self):
-        self.state = 'consensus'
-        print(f'Node {self.node_id} participating in consensus')
-        
-        # Reach consensus with neighbors
-        await asyncio.gather(*[neighbor.propose_task() for neighbor in self.neighbors])
-        
-        # Elect leader and assign task
-        leader = await self.elect_leader()
-        if self.node_id == leader.node_id:
-            self.task = self.generate_task()
-            self.state = 'active'
-            print(f'Node {self.node_id} elected as leader, executing task: {self.task}')
+    async def update_state(self, key, value):
+        await self.consensus_protocol.propose_update(key, value)
+        self.state[key] = value
+
+    async def get_state(self, key):
+        return self.state.get(key)
+
+class ConsensusProtocol:
+    def __init__(self, node):
+        self.node = node
+        self.quorum_size = max(1, len(self.node.peers) // 2)
+        self.proposals = {}
+        self.votes = {}
+
+    async def join_consensus(self, peer_node):
+        await self.sync_state(peer_node)
+        self.node.peers.add(peer_node)
+
+    async def sync_state(self, peer_node):
+        for key, value in peer_node.state.items():
+            if key not in self.node.state or self.node.state[key] != value:
+                await self.propose_update(key, value)
+
+    async def propose_update(self, key, value):
+        proposal_id = str(uuid.uuid4())
+        self.proposals[proposal_id] = (key, value)
+        self.votes[proposal_id] = set()
+        await self.gather_votes(proposal_id)
+        if len(self.votes[proposal_id]) >= self.quorum_size:
+            self.node.state[key] = value
+            del self.proposals[proposal_id]
+            del self.votes[proposal_id]
+
+    async def gather_votes(self, proposal_id):
+        tasks = []
+        for peer in self.node.peers:
+            tasks.append(self.vote_on_proposal(peer, proposal_id))
+        await asyncio.gather(*tasks)
+
+    async def vote_on_proposal(self, peer, proposal_id):
+        key, value = self.proposals[proposal_id]
+        if key in peer.state and peer.state[key] == value:
+            self.votes[proposal_id].add(peer)
         else:
-            self.state = 'idle'
-            print(f'Node {self.node_id} not elected as leader')
-
-    async def propose_task(self):
-        # Simulate proposing a task to neighbors
-        await asyncio.sleep(random.uniform(0.1, 1.0))
-        return {'node_id': self.node_id, 'task': self.generate_task()}
-
-    async def elect_leader(self) -> 'SwarmNode':
-        # Simulate leader election algorithm
-        proposals = await asyncio.gather(*[neighbor.propose_task() for neighbor in self.neighbors])
-        leader_proposal = max(proposals, key=lambda p: p['task'])
-        return next(filter(lambda n: n.node_id == leader_proposal['node_id'], self.neighbors))
-
-    def generate_task(self) -> str:
-        # Simulate generating a task
-        return f'Task-{random.randint(1, 100)}'
-
-    async def execute_task(self):
-        print(f'Node {self.node_id} executing task: {self.task}')
-        # Simulate executing the task
-        await asyncio.sleep(random.uniform(1.0, 5.0))
-        self.state = 'idle'
-        print(f'Node {self.node_id} completed task: {self.task}')
+            self.votes[proposal_id].discard(peer)
